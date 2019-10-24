@@ -180,6 +180,7 @@ struct Edge {
   bool outputs_ready_;
   bool deps_loaded_;
   bool deps_missing_;
+  std::string command_suffix_;
 
   const Rule& rule() const { return *rule_; }
   Pool* pool() const { return pool_; }

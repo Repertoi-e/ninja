@@ -1033,7 +1033,8 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
   }
 
   if (!deps_type.empty() && !config_.dry_run) {
-    assert(edge->outputs_.size() == 1 && "should have been rejected by parser");
+    //assert(edge->outputs_.size() == 1 && "should have been rejected by parser");
+    assert(edge->outputs_.size() >= 1 && "should have been rejected by parser");
     Node* out = edge->outputs_[0];
     TimeStamp deps_mtime = disk_interface_->Stat(out->path(), err);
     if (deps_mtime == -1)

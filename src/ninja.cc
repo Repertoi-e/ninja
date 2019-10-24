@@ -45,6 +45,8 @@
 #include "util.h"
 #include "version.h"
 
+#include "scanner_plugin.h"
+
 #ifdef _MSC_VER
 // Defined in msvc_helper_main-win32.cc.
 int MSVCHelperMain(int argc, char** argv);
@@ -1352,6 +1354,8 @@ NORETURN void real_main(int argc, char** argv) {
       Error("rebuilding '%s': %s", options.input_file, err.c_str());
       exit(1);
     }
+
+	cppm::scanner_update_state(&ninja.state_);
 
     int result = ninja.RunBuild(argc, argv);
     if (g_metrics)

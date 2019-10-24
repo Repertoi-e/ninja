@@ -43,6 +43,7 @@ add_library(libninja OBJECT
 	src/manifest_parser.cc
 	src/metrics.cc
 	src/parser.cc
+	src/scanner_plugin.cc
 	src/state.cc
 	src/string_piece_util.cc
 	src/util.cc
@@ -95,3 +96,6 @@ target_link_libraries(ninja_test PRIVATE libninja libninja-re2c)
 
 enable_testing()
 add_test(NinjaTest ninja_test)
+
+set_property(TARGET libninja PROPERTY CXX_STANDARD 17)
+set_property(TARGET ninja PROPERTY CXX_STANDARD 17)
