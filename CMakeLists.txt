@@ -7,8 +7,10 @@ else()
 	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated -fdiagnostics-color")
 endif()
 
+if(USE_RE2C)
 find_program(RE2C re2c)
-if(RE2C)
+endif()
+if(USE_RE2C AND RE2C)
 	# the depfile parser and ninja lexers are generated using re2c.
 	function(re2c IN OUT)
 		add_custom_command(DEPENDS ${IN} OUTPUT ${OUT}
@@ -69,6 +71,7 @@ add_executable(ninja src/ninja.cc)
 target_link_libraries(ninja PRIVATE libninja libninja-re2c)
 
 # Tests all build into ninja_test executable.
+if(BUILD_TESTS)
 add_executable(ninja_test
 	src/build_log_test.cc
 	src/build_test.cc
@@ -96,6 +99,7 @@ target_link_libraries(ninja_test PRIVATE libninja libninja-re2c)
 
 enable_testing()
 add_test(NinjaTest ninja_test)
+endif() # BUILD_TESTS
 
 set_property(TARGET libninja PROPERTY CXX_STANDARD 17)
 set_property(TARGET ninja PROPERTY CXX_STANDARD 17)
