@@ -1,12 +1,12 @@
 #include "scanner_plugin.h"
-#include "graph.h"
-#include "scanner.h"
-#include "trace.h"
 
 #include <fstream>
 #include <iostream>
 
+#include "graph.h"
 #include "module_cmdgen.h"
+#include "scanner.h"
+#include "trace.h"
 
 namespace fs = std::filesystem;
 
@@ -107,8 +107,10 @@ struct EdgeUpdater {
   }
 };
 
-void read_config(Scanner::Config& config) {
+bool read_config(Scanner::Config& config) {
   std::ifstream fin("scanner_config.txt");
+  if (!fin)
+    return false;
   std::string line_buf;
   while (std::getline(fin, line_buf)) {
     std::string_view line = line_buf;
@@ -118,19 +120,21 @@ void read_config(Scanner::Config& config) {
       config.tool_path = (std::string)value;
     }
   }
+  return true;
 }
 
 void scanner_update_state(State* state) {
   TRACE();
 
-  ModuleVisitor module_visitor;
-
   // todo: find which targets are for generated headers, build them first
   Scanner::Config config;
+  if (!read_config(config))
+    return;
+
+  ModuleVisitor module_visitor;
   config.submit_previous_results = true;
   config.module_visitor = &module_visitor;
-  config.tool_path =
-      R"(c:\Program Files\LLVM\bin\clang-scan-deps.exe)";
+  config.tool_path = R"(c:\Program Files\LLVM\bin\clang-scan-deps.exe)";
   config.db_path = fs::current_path().string();
   config.int_dir = config.db_path;
 
@@ -139,8 +143,6 @@ void scanner_update_state(State* state) {
   config.item_set.items.reserve(scan_item_idx_t{ state->edges_.size() });
   config.item_set.targets.push_back("x");
   config.item_set.item_root_path = config.db_path;
-
-  read_config(config);
 
   vector_map<scan_item_idx_t, Edge*> item_to_edge;
   vector_map<scan_item_idx_t, Node*> item_to_src_node;
