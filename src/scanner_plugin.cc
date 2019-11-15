@@ -128,16 +128,15 @@ void scanner_update_state(State* state) {
 
   // todo: find which targets are for generated headers, build them first
   Scanner::Config config;
+  config.tool_path = R"(c:\Program Files\LLVM\bin\clang-scan-deps.exe)";
   if (!read_config(config))
     return;
 
   ModuleVisitor module_visitor;
   config.submit_previous_results = true;
   config.module_visitor = &module_visitor;
-  config.tool_path = R"(c:\Program Files\LLVM\bin\clang-scan-deps.exe)";
   config.db_path = fs::current_path().string();
   config.int_dir = config.db_path;
-
   config.item_set.commands.reserve(cmd_idx_t{ state->edges_.size() });
   config.item_set.commands_contain_item_path = true;
   config.item_set.items.reserve(scan_item_idx_t{ state->edges_.size() });
