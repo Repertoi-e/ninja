@@ -297,8 +297,10 @@ void BuildStatus::PrintStatus(Edge* edge, EdgeStatus status) {
   bool force_full_command = config_.verbosity == BuildConfig::VERBOSE;
 
   string to_print = edge->GetBinding("description");
-  if (to_print.empty() || force_full_command)
+  if (to_print.empty() || force_full_command) {
     to_print = edge->GetBinding("command");
+    to_print += edge->command_suffix_;
+  }
 
   to_print = FormatProgressStatus(progress_status_format_, status) + to_print;
 

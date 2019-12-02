@@ -107,29 +107,75 @@ struct EdgeUpdater {
   }
 };
 
-bool read_config(Scanner::Config& config) {
+std::pair<std::string_view, std::string_view> split_in_two(
+    std::string_view str, std::string_view delim) {
+  auto first = str.substr(0, str.find(delim));
+  auto second = str.substr(std::min(first.size() + 1, str.size()));
+  return { first, second };
+}
+
+struct header_unit {
+  std::string target;
+  std::string src_path;
+};
+
+bool read_config(Scanner::Config& config,
+                 std::vector<header_unit>& header_units) {
   std::ifstream fin("scanner_config.txt");
   if (!fin)
     return false;
   std::string line_buf;
   while (std::getline(fin, line_buf)) {
     std::string_view line = line_buf;
-    auto key = line.substr(0, line.find(" "));
-    auto value = line.substr(std::min(key.size() + 1, line.size()));
+    auto [key, value] = split_in_two(line, " ");
     if (key == "tool_path") {
       config.tool_path = (std::string)value;
+    } else if (key == "header_unit") {
+      auto [target, headers] = split_in_two(value, " ");
+      while (!headers.empty()) {
+        auto [header, remaining] = split_in_two(headers, ";");
+        header_units.push_back({ (std::string)target, (std::string)header });
+        headers = remaining;
+      }
     }
   }
   return true;
+}
+
+void add_header_unit(State* state, std::string_view target,
+                     std::string_view header) {
+  std::string rule_name = "CXX_COMPILER__";
+  rule_name += target;
+  const Rule* rule = state->bindings_.LookupRule(rule_name);
+  if (!rule)
+    throw std::invalid_argument(
+        fmt::format("could not find rule {}", rule_name));
+  Node* node = state->LookupNode(StringPiece{ header.data(), header.size() });
+  assert(node != nullptr);
+  Edge* edge = state->AddEdge(rule);
+  edge->inputs_.push_back(node);
+}
+
+inline bool ends_with(std::string_view str, std::string_view with) {
+  if (str.size() < with.size())
+    return false;
+  return str.substr(str.size() - with.size(), with.size()) == with;
+}
+
+inline bool starts_with(std::string_view str, std::string_view with) {
+  if (str.size() < with.size())
+    return false;
+  return str.substr(0, with.size()) == with;
 }
 
 void scanner_update_state(State* state) {
   TRACE();
 
   // todo: find which targets are for generated headers, build them first
+  std::vector<header_unit> header_units;
   Scanner::Config config;
   config.tool_path = R"(c:\Program Files\LLVM\bin\clang-scan-deps.exe)";
-  if (!read_config(config))
+  if (!read_config(config, header_units))
     return;
 
   ModuleVisitor module_visitor;
@@ -153,16 +199,27 @@ void scanner_update_state(State* state) {
   item_to_out_node.reserve(nr_edges);
   item_cmd_format.reserve(nr_edges);
 
+  constexpr std::string_view rule_prefix = "CXX_COMPILER__";
+
   for (Edge* edge : state->edges_) {
-    // todo: maybe use a config file or this, or a special binding on the edge ?
-    if (edge->rule().name().find("CXX_COMPILER") != 0)
+    auto& rule_name = edge->rule().name();
+    // todo: maybe use the config file or a special binding on the edge ?
+    if (!starts_with(rule_name, rule_prefix))  // todo: use starts_with in C++20
       continue;
+    // auto target = std::string_view{ rule_name }.substr(rule_prefix.size());
+
     Node* src_node = get_src_node(edge);
     Node* out_node = get_out_node(edge);
     if (!src_node || !out_node)
       continue;
-    config.item_set.items.push_back(
-        { src_node->path(), config.item_set.commands.size(), {} });
+
+    bool is_header_unit = ends_with(src_node->path(), ".h"); // todo:
+
+    config.item_set.items.push_back({ src_node->path(),
+                                      config.item_set.commands.size(),
+                                      {},  // todo: use target
+                                      is_header_unit });
+
     std::string cmd = edge->EvaluateCommand(/*incld_rs_file=*/true);
     adjust_command(cmd);
     config.item_set.commands.push_back(cmd);
@@ -188,15 +245,16 @@ void scanner_update_state(State* state) {
   vector_map<scan_item_idx_t, Node*> bmi_nodes;
   bmi_nodes.resize(config.item_set.items.size());
   for (auto i : config.item_set.items.indices())
-    if (!module_visitor.exports[i].empty())
+    if (config.item_set.items[i].is_header_unit || !module_visitor.exports[i].empty())
       bmi_nodes[i] =
           state->GetNode(cmd_gen.get_bmi_file(item_to_out_node[i]->path()), 0);
 
   EdgeUpdater edge_updater;
   for (auto idx : config.item_set.items.indices()) {
+    bool is_header_unit = config.item_set.items[idx].is_header_unit;
     bool has_export = (!module_visitor.exports[idx].empty());
     bool has_import = (!module_visitor.imports_item[idx].empty());
-    if (!has_export && !has_import)
+    if (!is_header_unit && !has_export && !has_import)
       continue;
 
     Edge* obj_edge = item_to_edge[idx];
@@ -210,7 +268,7 @@ void scanner_update_state(State* state) {
     if (format.isClang()) {
       // clang builds the bmi and the obj separately
       cmd_gen.references_to_string(obj_edge->command_suffix_);
-      if (has_export) {
+      if (has_export || is_header_unit) {
         edge_updater.add_implicit_input(bmi_nodes[idx]);
         edge_updater.update();
 
@@ -226,7 +284,7 @@ void scanner_update_state(State* state) {
     } else if (format.isMSVC()) {
       // MSVC builds both the bmi and the obj in one command
       cmd_gen.full_cmd_to_string(obj_edge->command_suffix_);
-      if (has_export) {
+      if (has_export || is_header_unit) {
         // note: this requires disabling the assert(edge->outputs_.size() == 1)
         // in build.cc
         edge_updater.add_implicit_output(bmi_nodes[idx]);
