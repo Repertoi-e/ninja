@@ -168,6 +168,28 @@ inline bool starts_with(std::string_view str, std::string_view with) {
   return str.substr(0, with.size()) == with;
 }
 
+bool print_results(
+    const vector_map<scan_item_idx_t, Scanner::Result>& results)
+{
+  uint32_t utd_items = 0;
+  uint32_t scanned_items = 0;
+  uint32_t failed_items = 0;
+  for (auto& r : results) {
+    if (r.ood == ood_state::up_to_date)
+      utd_items++;
+    else
+      scanned_items++;
+    if (r.scan == scan_state::failed)
+      failed_items++;
+  }
+
+  fmt::print("scanned {} items, {} up-to-date", scanned_items, utd_items);
+  if (failed_items != 0)
+    fmt::print(", {} failed", failed_items);
+  fmt::print("\n");
+  return failed_items == 0;
+}
+
 void scanner_update_state(State* state) {
   TRACE();
 
@@ -213,7 +235,7 @@ void scanner_update_state(State* state) {
     if (!src_node || !out_node)
       continue;
 
-    bool is_header_unit = ends_with(src_node->path(), ".h"); // todo:
+    bool is_header_unit = ends_with(src_node->path(), ".h");  // todo:
 
     config.item_set.items.push_back({ src_node->path(),
                                       config.item_set.commands.size(),
@@ -235,7 +257,8 @@ void scanner_update_state(State* state) {
 
   Scanner scanner;
   try {
-    scanner.scan(config_view);
+    if (!print_results(scanner.scan(config_view)))
+      exit(1);
   } catch (std::exception& e) {
     std::cerr << "scanner failed: " << e.what() << "\n";
     exit(1);
@@ -245,7 +268,8 @@ void scanner_update_state(State* state) {
   vector_map<scan_item_idx_t, Node*> bmi_nodes;
   bmi_nodes.resize(config.item_set.items.size());
   for (auto i : config.item_set.items.indices())
-    if (config.item_set.items[i].is_header_unit || !module_visitor.exports[i].empty())
+    if (config.item_set.items[i].is_header_unit ||
+        !module_visitor.exports[i].empty())
       bmi_nodes[i] =
           state->GetNode(cmd_gen.get_bmi_file(item_to_out_node[i]->path()), 0);
 
