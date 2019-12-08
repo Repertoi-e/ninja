@@ -1,5 +1,6 @@
 #include "scanner_plugin.h"
 
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 
@@ -22,36 +23,9 @@ void adjust_command(std::string& cmd) {
 }
 
 Node* get_src_node(Edge* edge) {
-  Node* src_node = nullptr;
-  for (Node* node : edge->inputs_) {
-    // cc rules depend on a phony rule for their target:
-    if (node->in_edge() != nullptr)
-      continue;
-    if (src_node != nullptr) {
-      std::cout << "why do we have two source inputs ?\n";
-      break;
-    }
-    src_node = node;
-  }
-  if (src_node == nullptr) {
-    std::cout << "why don't we have source inputs ?\n";
-  }
-  return src_node;
-}
-
-Node* get_out_node(Edge* edge) {
-  Node* out_node = nullptr;
-  for (Node* node : edge->outputs_) {
-    if (out_node != nullptr) {
-      std::cout << "why do we have two outputs ?\n";
-      break;
-    }
-    out_node = node;
-  }
-  if (out_node == nullptr) {
-    std::cout << "why don't we have source outputs ?\n";
-  }
-  return out_node;
+  assert(edge != nullptr);
+  assert(!edge->inputs_.empty());
+  return edge->inputs_.front();
 }
 
 struct EdgeUpdater {
@@ -121,6 +95,7 @@ struct header_unit {
 
 bool read_config(Scanner::Config& config,
                  std::vector<header_unit>& header_units) {
+  TRACE();
   std::ifstream fin("scanner_config.txt");
   if (!fin)
     return false;
@@ -144,6 +119,7 @@ bool read_config(Scanner::Config& config,
 
 void add_header_unit(State* state, std::string_view target,
                      std::string_view header) {
+  // todo: currently unused, but will be needed for e.g clang modules
   std::string rule_name = "CXX_COMPILER__";
   rule_name += target;
   const Rule* rule = state->bindings_.LookupRule(rule_name);
@@ -169,8 +145,7 @@ inline bool starts_with(std::string_view str, std::string_view with) {
 }
 
 bool print_results(
-    const vector_map<scan_item_idx_t, Scanner::Result>& results)
-{
+    const vector_map<scan_item_idx_t, Scanner::Result>& results) {
   uint32_t utd_items = 0;
   uint32_t scanned_items = 0;
   uint32_t failed_items = 0;
@@ -190,15 +165,162 @@ bool print_results(
   return failed_items == 0;
 }
 
-void scanner_update_state(State* state) {
-  TRACE();
+// When a source file X depends on generated headers from a previous target Y,
+// CMake generates a node with the cmake_object_order_depends prefix
+// and X will depend on that order only node, which then depends on Y.
 
-  // todo: find which targets are for generated headers, build them first
+// If you have A with inputs B and C, but C has an order only dependency on D
+// which then has B as an input, then a single BFS traversal is not enough.
+// The ninja generator could make sure that this doesn't happen, but then
+// if the user wants to build multiple targets then we have the same problem.
+struct GraphWalker {
+ public:
+  std::vector<Node*> queue;
+  std::vector<std::pair<Node*, int>> old_ids;
+  std::vector<Node*> order_only;
+  std::vector<Node*> cpp_objects;
+
+  GraphWalker(State* state) {
+    std::size_t nr_edges = state->edges_.size();
+    queue.reserve(nr_edges);
+    old_ids.reserve(nr_edges);
+    order_only.reserve(nr_edges);
+    cpp_objects.reserve(nr_edges);
+  }
+
+  bool is_cpp_object(Node* out_node) {
+    Edge* edge = out_node->in_edge();
+    if (!edge)
+      return false;
+    // todo: maybe use the config file or a special binding on the edge ?
+    // todo: use string::starts_with in C++20
+    return starts_with(edge->rule().name(), "CXX_COMPILER__");
+  }
+
+  template <int id_visited, bool save_old_ids>
+  void add_to_queue(Node* node) {
+    queue.push_back(node);
+    if constexpr (save_old_ids)
+      old_ids.push_back({ node, node->id() });
+    node->set_id(id_visited);
+  }
+
+  template <int id_visited, bool save_old_ids>
+  void queue_inputs(Node* node) {
+    Edge* in_edge = node->in_edge();
+    if (!in_edge)
+      return;
+    for (Node* input : in_edge->inputs_) {
+      if (input->id() == id_visited)
+        continue;
+      add_to_queue<id_visited, save_old_ids>(input);
+    }
+  }
+
+  // Find a set of order only nodes such that if you build that set,
+  // the generated headers will be available when scanning everything else.
+  // At the same time, find a set that contains all sources to be scanned.
+  // In both cases, this is not necessarily the minimal set yet,
+  // some might get removed later.
+  // Setting the node id to -2 is used to mark a node as visited. This
+  // assumes ninja doesn't already assign negative values other than -1
+  // to any of the node ids. The nodes might already have an id, so that id
+  // is saved and will be restored later.
+  void find_order_only_nodes(const std::vector<Node*>& targets) {
+    for (Node* node : targets)
+      add_to_queue<-2, true>(node);
+
+    std::size_t s = 0;
+    while (s < queue.size()) {
+      Node* node = queue[s++];
+      if (is_cpp_object(node)) {
+        cpp_objects.push_back(node);
+      } else if (starts_with(node->path(), "cmake_object_order_depends")) {
+        order_only.push_back(node);
+      }
+      queue_inputs<-2, true>(node);
+    }
+  }
+
+  // Mark every traansitive dependency of the order only nodes.
+  // The previous step already visited all the nodes, so we don't need
+  // to add any additional ids to be restored later.
+  void find_pre_scan_nodes() {
+    queue.clear();
+
+    // don't add the order only nodes themselves to the queue,
+    // they will only be marked and added to the queue if
+    // they are the transitive dependency of another order only node
+    for (Node* node : order_only)
+      queue_inputs<-3, false>(node);
+
+    std::size_t s = 0;
+    while (s < queue.size())
+      queue_inputs<-3, false>(queue[s++]);
+  }
+
+  // todo: use std::erase_if in C++20
+  template <typename Pred>
+  void erase_if(std::vector<Node*>& vec, Pred&& pred) {
+    vec.erase(std::remove_if(vec.begin(), vec.end(), std::forward<Pred>(pred)),
+              vec.end());
+  }
+
+  void remove_pre_scan_nodes() {
+    auto is_pre_scan_node = [](Node* node) { return node->id() == -3; };
+    erase_if(order_only, is_pre_scan_node);
+    erase_if(cpp_objects, is_pre_scan_node);
+  }
+
+  void restore_node_ids() {
+    for (auto [node, id] : old_ids)
+      node->set_id(id);
+  }
+
+  void get_pre_scan_targets_and_sources_to_scan(
+      const std::vector<Node*>& targets) {
+    TRACE();
+
+    find_order_only_nodes(targets);
+    find_pre_scan_nodes();
+    remove_pre_scan_nodes();
+    restore_node_ids();
+  }
+};
+
+void scanner_update_state(
+    State* state, const vector<Node*>& targets,
+    const std::function<int(const std::vector<Node*>&)>& build_func) {
   std::vector<header_unit> header_units;
   Scanner::Config config;
   config.tool_path = R"(c:\Program Files\LLVM\bin\clang-scan-deps.exe)";
   if (!read_config(config, header_units))
     return;
+
+  for (Node* target : targets) {
+    // no need to scan if we're going to clean everything
+    if (target->path() == "clean")
+      return;
+  }
+
+  GraphWalker walker{ state };
+  // Find which targets are for generated headers, build them before scanning.
+  // Only scan sources which have not been built already.
+  // todo: the ninja generator could do this partitioning already,
+  // so this may be pretty fast but there's no need to do it on every build
+  walker.get_pre_scan_targets_and_sources_to_scan(targets);
+
+#if 0
+  for (Node* target : walker.order_only) {
+    fmt::print("{}\n", target->path());
+  }
+  exit(1);
+#endif
+
+  if (int ret = build_func(walker.order_only); ret != 0)
+    exit(ret);
+
+  TRACE();
 
   ModuleVisitor module_visitor;
   config.submit_previous_results = true;
@@ -208,7 +330,7 @@ void scanner_update_state(State* state) {
   config.item_set.commands.reserve(cmd_idx_t{ state->edges_.size() });
   config.item_set.commands_contain_item_path = true;
   config.item_set.items.reserve(scan_item_idx_t{ state->edges_.size() });
-  config.item_set.targets.push_back("x");
+  config.item_set.targets.push_back("x");  // todo:
   config.item_set.item_root_path = config.db_path;
 
   vector_map<scan_item_idx_t, Edge*> item_to_edge;
@@ -221,20 +343,10 @@ void scanner_update_state(State* state) {
   item_to_out_node.reserve(nr_edges);
   item_cmd_format.reserve(nr_edges);
 
-  constexpr std::string_view rule_prefix = "CXX_COMPILER__";
-
-  for (Edge* edge : state->edges_) {
-    auto& rule_name = edge->rule().name();
-    // todo: maybe use the config file or a special binding on the edge ?
-    if (!starts_with(rule_name, rule_prefix))  // todo: use starts_with in C++20
-      continue;
-    // auto target = std::string_view{ rule_name }.substr(rule_prefix.size());
-
+  for (Node* out_node : walker.cpp_objects) {
+    Edge* edge = out_node->in_edge();
     Node* src_node = get_src_node(edge);
-    Node* out_node = get_out_node(edge);
-    if (!src_node || !out_node)
-      continue;
-
+    // auto target = std::string_view{ rule_name }.substr(rule_prefix.size());
     bool is_header_unit = ends_with(src_node->path(), ".h");  // todo:
 
     config.item_set.items.push_back({ src_node->path(),
@@ -260,7 +372,7 @@ void scanner_update_state(State* state) {
     if (!print_results(scanner.scan(config_view)))
       exit(1);
   } catch (std::exception& e) {
-    std::cerr << "scanner failed: " << e.what() << "\n";
+    fmt::print("scanner failed: {}\n", e.what());
     exit(1);
   }
 
@@ -325,6 +437,16 @@ void scanner_update_state(State* state) {
   }
 
   // exit(1);
+}
+
+void scanner_clean() {
+  Scanner scanner;
+  try {
+    scanner.clean_all(fs::current_path().string());
+  } catch (std::exception& e) {
+    std::cerr << "clean failed: " << e.what() << "\n";
+    exit(1);
+  }
 }
 
 }  // namespace cppm

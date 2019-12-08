@@ -151,6 +151,10 @@ struct NinjaMain : public BuildLogUser {
   /// @return an exit code.
   int RunBuild(int argc, char** argv);
 
+  /// Build a given set of targets.
+  /// @return an exit code.
+  int RunBuild(const std::vector<Node*>& targets, bool print_no_work_to_do);
+
   /// Dump the output requested by '-d stats'.
   void DumpMetrics();
 
@@ -712,11 +716,14 @@ int NinjaMain::ToolClean(const Options* options, int argc, char* argv[]) {
 
   Cleaner cleaner(&state_, config_, &disk_interface_);
   if (argc >= 1) {
+    Error("the scanner doesn't support this yet");
+    return 1;
     if (clean_rules)
       return cleaner.CleanRules(argc, argv);
     else
       return cleaner.CleanTargets(argc, argv);
   } else {
+    cppm::scanner_clean();
     return cleaner.CleanAll(generator);
   }
 }
@@ -1123,6 +1130,12 @@ int NinjaMain::RunBuild(int argc, char** argv) {
     Error("%s", err.c_str());
     return 1;
   }
+  return RunBuild(targets, true);
+}
+
+int NinjaMain::RunBuild(const std::vector<Node*>& targets,
+                        bool print_no_work_to_do) {
+  string err;
 
   disk_interface_.AllowStatCache(g_experimental_statcache);
 
@@ -1143,7 +1156,8 @@ int NinjaMain::RunBuild(int argc, char** argv) {
   disk_interface_.AllowStatCache(false);
 
   if (builder.AlreadyUpToDate()) {
-    printf("ninja: no work to do.\n");
+    if(print_no_work_to_do)
+      printf("ninja: no work to do.\n");
     return 0;
   }
 
@@ -1355,9 +1369,17 @@ NORETURN void real_main(int argc, char** argv) {
       exit(1);
     }
 
-	cppm::scanner_update_state(&ninja.state_);
+    vector<Node*> targets;
+    if (!ninja.CollectTargetsFromArgs(argc, argv, &targets, &err)) {
+      Error("%s", err.c_str());
+      exit(1);
+    }
 
-    int result = ninja.RunBuild(argc, argv);
+    cppm::scanner_update_state(&ninja.state_, targets, [&](auto& targets) {
+      return ninja.RunBuild(targets, false);
+    });
+
+    int result = ninja.RunBuild(targets, true);
     if (g_metrics)
       ninja.DumpMetrics();
     exit(result);
