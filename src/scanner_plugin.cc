@@ -93,8 +93,12 @@ struct header_unit {
   std::string src_path;
 };
 
-bool read_config(Scanner::Config& config,
-                 std::vector<header_unit>& header_units) {
+struct NinjaConfig : public Scanner::Config {
+  ModuleCommandGenerator::Format command_format;
+  std::vector<header_unit> header_units;
+};
+
+bool read_config(NinjaConfig& config) {
   TRACE();
   std::ifstream fin("scanner_config.txt");
   if (!fin)
@@ -105,11 +109,15 @@ bool read_config(Scanner::Config& config,
     auto [key, value] = split_in_two(line, " ");
     if (key == "tool_path") {
       config.tool_path = (std::string)value;
+    } else if (key == "command_format") {
+      config.command_format =
+          ModuleCommandGenerator::Format::from_string(value);
     } else if (key == "header_unit") {
       auto [target, headers] = split_in_two(value, " ");
       while (!headers.empty()) {
         auto [header, remaining] = split_in_two(headers, ";");
-        header_units.push_back({ (std::string)target, (std::string)header });
+        config.header_units.push_back(
+            { (std::string)target, (std::string)header });
         headers = remaining;
       }
     }
@@ -291,10 +299,9 @@ struct GraphWalker {
 void scanner_update_state(
     State* state, const vector<Node*>& targets,
     const std::function<int(const std::vector<Node*>&)>& build_func) {
-  std::vector<header_unit> header_units;
-  Scanner::Config config;
+  NinjaConfig config;
   config.tool_path = R"(c:\Program Files\LLVM\bin\clang-scan-deps.exe)";
-  if (!read_config(config, header_units))
+  if (!read_config(config))
     return;
 
   for (Node* target : targets) {
@@ -308,6 +315,9 @@ void scanner_update_state(
   // Only scan sources which have not been built already.
   // todo: the ninja generator could do this partitioning already,
   // so this may be pretty fast but there's no need to do it on every build
+  // todo: integrate the scanner and the executor to allow running
+  // the scanner to detect dependencies on generated headers
+  // and then have every item wait only until those deps are generated
   walker.get_pre_scan_targets_and_sources_to_scan(targets);
 
 #if 0
@@ -330,7 +340,6 @@ void scanner_update_state(
   config.item_set.commands.reserve(cmd_idx_t{ state->edges_.size() });
   config.item_set.commands_contain_item_path = true;
   config.item_set.items.reserve(scan_item_idx_t{ state->edges_.size() });
-  config.item_set.targets.push_back("x");  // todo:
   config.item_set.item_root_path = config.db_path;
 
   vector_map<scan_item_idx_t, Edge*> item_to_edge;
@@ -341,27 +350,42 @@ void scanner_update_state(
   item_to_edge.reserve(nr_edges);
   item_to_src_node.reserve(nr_edges);
   item_to_out_node.reserve(nr_edges);
-  item_cmd_format.reserve(nr_edges);
+  if (!config.command_format)
+    item_cmd_format.reserve(nr_edges);
+
+  target_idx_t next_target_idx = {};
+  std::unordered_map<const Rule*, target_idx_t> target_map;
+
+  auto get_target_id = [&](Edge* edge) {
+    const Rule* rule = &edge->rule();
+    auto [itr, inserted] = target_map.try_emplace(rule, next_target_idx);
+    if (inserted) {
+      constexpr std::string_view prefix = "CXX_COMPILER__";
+      assert(starts_with(rule->name(), prefix));
+      auto target = std::string_view{ rule->name() }.substr(prefix.size());
+      config.item_set.targets.push_back((std::string)target);
+      ++next_target_idx;
+    }
+    return itr->second;
+  };
 
   for (Node* out_node : walker.cpp_objects) {
     Edge* edge = out_node->in_edge();
     Node* src_node = get_src_node(edge);
-    // auto target = std::string_view{ rule_name }.substr(rule_prefix.size());
     bool is_header_unit = ends_with(src_node->path(), ".h");  // todo:
 
     config.item_set.items.push_back({ src_node->path(),
                                       config.item_set.commands.size(),
-                                      {},  // todo: use target
-                                      is_header_unit });
+                                      get_target_id(edge), is_header_unit });
 
-    std::string cmd = edge->EvaluateCommand(/*incld_rs_file=*/true);
+    std::string cmd = edge->EvaluateCommand(/*incld_rsp_file=*/true);
     adjust_command(cmd);
     config.item_set.commands.push_back(cmd);
     item_to_edge.push_back(edge);
     item_to_src_node.push_back(src_node);
     item_to_out_node.push_back(out_node);
-    // todo: maybe use a config file or this, or a special binding on the edge ?
-    item_cmd_format.push_back(ModuleCommandGenerator::detect_format(cmd));
+    if (!config.command_format)
+      item_cmd_format.push_back(ModuleCommandGenerator::detect_format(cmd));
   }
 
   auto config_owned_view = Scanner::ConfigOwnedView::from(config);
@@ -396,7 +420,9 @@ void scanner_update_state(
     Edge* obj_edge = item_to_edge[idx];
     edge_updater.set_edge_to_update(obj_edge);
 
-    auto format = item_cmd_format[idx];
+    auto format =
+        config.command_format ? config.command_format : item_cmd_format[idx];
+
     cmd_gen.generate(idx, format, [&](scan_item_idx_t idx) -> std::string_view {
       return bmi_nodes[idx]->path();
     });
