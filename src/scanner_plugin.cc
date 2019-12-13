@@ -395,6 +395,8 @@ void scanner_update_state(
   try {
     if (!print_results(scanner.scan(config_view)))
       exit(1);
+    if (!module_visitor.collate_success)
+      exit(1);
   } catch (std::exception& e) {
     fmt::print("scanner failed: {}\n", e.what());
     exit(1);
