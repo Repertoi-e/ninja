@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <fstream>
 #include <iostream>
+#include <unordered_set>
 
 #include "graph.h"
 #include "module_cmdgen.h"
@@ -88,17 +89,13 @@ std::pair<std::string_view, std::string_view> split_in_two(
   return { first, second };
 }
 
-struct header_unit {
-  std::string target;
-  std::string src_path;
-};
-
 struct NinjaConfig : public Scanner::Config {
   ModuleCommandGenerator::Format command_format;
-  std::vector<header_unit> header_units;
+  // todo: mark the nodes instead, should be faster
+  std::unordered_set<Node*> header_units;
 };
 
-bool read_config(NinjaConfig& config) {
+bool read_config(NinjaConfig& config, State* state) {
   TRACE();
   std::ifstream fin("scanner_config.txt");
   if (!fin)
@@ -112,12 +109,17 @@ bool read_config(NinjaConfig& config) {
     } else if (key == "command_format") {
       config.command_format =
           ModuleCommandGenerator::Format::from_string(value);
-    } else if (key == "header_unit") {
+    } else if (key == "header_units") {
       auto [target, headers] = split_in_two(value, " ");
       while (!headers.empty()) {
         auto [header, remaining] = split_in_two(headers, ";");
-        config.header_units.push_back(
-            { (std::string)target, (std::string)header });
+        Node* node =
+            state->LookupNode(StringPiece{ header.data(), header.size() });
+        if (node == nullptr) {
+          fmt::print("path lookup failed for header unit '{}'", header);
+          exit(1);
+        }
+        config.header_units.insert(node);
         headers = remaining;
       }
     }
@@ -125,9 +127,10 @@ bool read_config(NinjaConfig& config) {
   return true;
 }
 
+#if 0
+  // todo: currently unused, but will be needed for e.g clang modules
 void add_header_unit(State* state, std::string_view target,
                      std::string_view header) {
-  // todo: currently unused, but will be needed for e.g clang modules
   std::string rule_name = "CXX_COMPILER__";
   rule_name += target;
   const Rule* rule = state->bindings_.LookupRule(rule_name);
@@ -139,6 +142,7 @@ void add_header_unit(State* state, std::string_view target,
   Edge* edge = state->AddEdge(rule);
   edge->inputs_.push_back(node);
 }
+#endif
 
 inline bool ends_with(std::string_view str, std::string_view with) {
   if (str.size() < with.size())
@@ -301,7 +305,7 @@ void scanner_update_state(
     const std::function<int(const std::vector<Node*>&)>& build_func) {
   NinjaConfig config;
   config.tool_path = R"(c:\Program Files\LLVM\bin\clang-scan-deps.exe)";
-  if (!read_config(config))
+  if (!read_config(config, state))
     return;
 
   for (Node* target : targets) {
@@ -372,7 +376,7 @@ void scanner_update_state(
   for (Node* out_node : walker.cpp_objects) {
     Edge* edge = out_node->in_edge();
     Node* src_node = get_src_node(edge);
-    bool is_header_unit = ends_with(src_node->path(), ".h");  // todo:
+    bool is_header_unit = (config.header_units.count(src_node) != 0);
 
     config.item_set.items.push_back({ src_node->path(),
                                       config.item_set.commands.size(),
@@ -418,7 +422,6 @@ void scanner_update_state(
     bool has_import = (!module_visitor.imports_item[idx].empty());
     if (!is_header_unit && !has_export && !has_import)
       continue;
-
     Edge* obj_edge = item_to_edge[idx];
     edge_updater.set_edge_to_update(obj_edge);
 
@@ -475,6 +478,14 @@ void scanner_clean() {
     std::cerr << "clean failed: " << e.what() << "\n";
     exit(1);
   }
+}
+
+int scanner_run_tool(std::string_view tool_name) {
+  if (tool_name == "print_db") {
+    Scanner{}.print_db(fs::current_path().string());
+    return 0;
+  }
+  return 1;
 }
 
 }  // namespace cppm

@@ -129,6 +129,7 @@ struct NinjaMain : public BuildLogUser {
   int ToolRecompact(const Options* options, int argc, char* argv[]);
   int ToolUrtle(const Options* options, int argc, char** argv);
   int ToolRules(const Options* options, int argc, char* argv[]);
+  int ToolCPPM(const Options* options, int argc, char* argv[]);
 
   /// Open the build log.
   /// @return false on error.
@@ -617,6 +618,11 @@ int NinjaMain::ToolRules(const Options* options, int argc, char* argv[]) {
   return 0;
 }
 
+int NinjaMain::ToolCPPM(const Options* options, int argc, char* argv[]) {
+  std::string_view cppm_tool = argv[argc - 1];
+  return cppm::scanner_run_tool(cppm_tool);
+}
+
 enum PrintCommandMode { PCM_Single, PCM_All };
 void PrintCommands(Edge* edge, set<Edge*>* seen, PrintCommandMode mode) {
   if (!edge)
@@ -917,6 +923,8 @@ const Tool* ChooseTool(const string& tool_name) {
       Tool::RUN_AFTER_LOAD, &NinjaMain::ToolRules },
     { "urtle", NULL,
       Tool::RUN_AFTER_FLAGS, &NinjaMain::ToolUrtle },
+    { "cppm", "tools related to cpp_modules",
+      Tool::RUN_AFTER_FLAGS, &NinjaMain::ToolCPPM },
     { NULL, NULL, Tool::RUN_AFTER_FLAGS, NULL }
   };
 
