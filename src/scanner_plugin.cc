@@ -190,23 +190,33 @@ struct GraphWalker {
   std::vector<Node*> queue;
   std::vector<std::pair<Node*, int>> old_ids;
   std::vector<Node*> order_only;
-  std::vector<Node*> cpp_objects;
+  std::vector<Node*> all_cpp_objects;
+  std::vector<Node*> selected_cpp_objects;
 
   GraphWalker(State* state) {
     std::size_t nr_edges = state->edges_.size();
     queue.reserve(nr_edges);
     old_ids.reserve(nr_edges);
     order_only.reserve(nr_edges);
-    cpp_objects.reserve(nr_edges);
+    all_cpp_objects.reserve(nr_edges);
+    //selected_cpp_objects.reserve(nr_edges);
+
+    find_all_cpp_objects(state);
   }
 
-  bool is_cpp_object(Node* out_node) {
-    Edge* edge = out_node->in_edge();
-    if (!edge)
-      return false;
+  bool is_cpp_edge(Edge* edge) {
     // todo: maybe use the config file or a special binding on the edge ?
     // todo: use string::starts_with in C++20
     return starts_with(edge->rule().name(), "CXX_COMPILER__");
+  }
+
+  // if we don't pass all of the cpp edges to the scanner then
+  // the files that it does need to scan may depend on modules/header units
+  // that it doesn't see, and collate will fail 
+  void find_all_cpp_objects(State* state) {
+    for (Edge* edge : state->edges_)
+      if (is_cpp_edge(edge) && !edge->outputs_.empty())
+        all_cpp_objects.push_back(edge->outputs_[0]);
   }
 
   template <int id_visited, bool save_old_ids>
@@ -245,11 +255,8 @@ struct GraphWalker {
     std::size_t s = 0;
     while (s < queue.size()) {
       Node* node = queue[s++];
-      if (is_cpp_object(node)) {
-        cpp_objects.push_back(node);
-      } else if (starts_with(node->path(), "cmake_object_order_depends")) {
+      if (starts_with(node->path(), "cmake_object_order_depends"))
         order_only.push_back(node);
-      }
       queue_inputs<-2, true>(node);
     }
   }
@@ -279,9 +286,15 @@ struct GraphWalker {
   }
 
   void remove_pre_scan_nodes() {
-    auto is_pre_scan_node = [](Node* node) { return node->id() == -3; };
-    erase_if(order_only, is_pre_scan_node);
-    erase_if(cpp_objects, is_pre_scan_node);
+    erase_if(order_only, [](Node* node) { return node->id() == -3; });
+  }
+
+  // todo: currently unused but will be useful to minimize the number of files
+  // that need to be scanned when e.g the user only wants to compile a single file
+  void find_selected_cpp_nodes() {
+    for (Node* node : all_cpp_objects)
+      if (node->id() == -2)
+        selected_cpp_objects.push_back(node);
   }
 
   void restore_node_ids() {
@@ -296,6 +309,7 @@ struct GraphWalker {
     find_order_only_nodes(targets);
     find_pre_scan_nodes();
     remove_pre_scan_nodes();
+    //find_selected_cpp_nodes();
     restore_node_ids();
   }
 };
@@ -373,7 +387,7 @@ void scanner_update_state(
     return itr->second;
   };
 
-  for (Node* out_node : walker.cpp_objects) {
+  for (Node* out_node : walker.all_cpp_objects) {
     Edge* edge = out_node->in_edge();
     Node* src_node = get_src_node(edge);
     bool is_header_unit = (config.header_units.count(src_node) != 0);
