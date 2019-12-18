@@ -93,6 +93,7 @@ struct NinjaConfig : public Scanner::Config {
   ModuleCommandGenerator::Format command_format;
   // todo: mark the nodes instead, should be faster
   std::unordered_set<Node*> header_units;
+  bool verbose_scan = false;
 };
 
 bool read_config(NinjaConfig& config, State* state) {
@@ -122,6 +123,8 @@ bool read_config(NinjaConfig& config, State* state) {
         config.header_units.insert(node);
         headers = remaining;
       }
+    } else if (key == "verbose_scan") {
+      config.verbose_scan = true;
     }
   }
   return true;
@@ -199,7 +202,7 @@ struct GraphWalker {
     old_ids.reserve(nr_edges);
     order_only.reserve(nr_edges);
     all_cpp_objects.reserve(nr_edges);
-    //selected_cpp_objects.reserve(nr_edges);
+    // selected_cpp_objects.reserve(nr_edges);
 
     find_all_cpp_objects(state);
   }
@@ -212,7 +215,7 @@ struct GraphWalker {
 
   // if we don't pass all of the cpp edges to the scanner then
   // the files that it does need to scan may depend on modules/header units
-  // that it doesn't see, and collate will fail 
+  // that it doesn't see, and collate will fail
   void find_all_cpp_objects(State* state) {
     for (Edge* edge : state->edges_)
       if (is_cpp_edge(edge) && !edge->outputs_.empty())
@@ -290,7 +293,7 @@ struct GraphWalker {
   }
 
   // todo: currently unused but will be useful to minimize the number of files
-  // that need to be scanned when e.g the user only wants to compile a single file
+  // that need to be scanned when the user only wants to compile a single file
   void find_selected_cpp_nodes() {
     for (Node* node : all_cpp_objects)
       if (node->id() == -2)
@@ -309,7 +312,7 @@ struct GraphWalker {
     find_order_only_nodes(targets);
     find_pre_scan_nodes();
     remove_pre_scan_nodes();
-    //find_selected_cpp_nodes();
+    // find_selected_cpp_nodes();
     restore_node_ids();
   }
 };
@@ -398,6 +401,8 @@ void scanner_update_state(
 
     std::string cmd = edge->EvaluateCommand(/*incld_rsp_file=*/true);
     adjust_command(cmd);
+    if (config.verbose_scan)
+      cmd += " -v ";
     config.item_set.commands.push_back(cmd);
     item_to_edge.push_back(edge);
     item_to_src_node.push_back(src_node);
