@@ -355,7 +355,7 @@ void scanner_update_state(
 
   ModuleVisitor module_visitor;
   config.submit_previous_results = true;
-  config.module_visitor = &module_visitor;
+  config.collated_results = &module_visitor;
   config.db_path = fs::current_path().string();
   config.int_dir = config.db_path;
   config.item_set.commands.reserve(cmd_idx_t{ state->edges_.size() });
@@ -418,8 +418,10 @@ void scanner_update_state(
   try {
     if (!print_results(scanner.scan(config_view)))
       exit(1);
-    if (!module_visitor.collate_success)
+    if (!module_visitor.collate_success) {
+      fmt::print("collate failed\n");
       exit(1);
+    }
   } catch (std::exception& e) {
     fmt::print("scanner failed: {}\n", e.what());
     exit(1);
@@ -485,8 +487,6 @@ void scanner_update_state(
 
     edge_updater.update();
   }
-
-  // exit(1);
 }
 
 void scanner_clean() {
