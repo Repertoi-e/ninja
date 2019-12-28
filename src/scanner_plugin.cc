@@ -1,6 +1,7 @@
 #include "scanner_plugin.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <unordered_set>
@@ -14,13 +15,20 @@ namespace fs = std::filesystem;
 
 namespace cppm {
 
-void adjust_command(std::string& cmd) {
-  // showincludes causes the scanner to print deps in MSVC format which breaks
-  // the output parsing
-  std::string_view showincludes = " /showIncludes";
-  auto ofs = cmd.find(showincludes);
+void remove_from_string(std::string& from, std::string_view to_remove) {
+  auto ofs = from.find(to_remove);
   if (ofs != std::string::npos)
-    cmd.erase(ofs, showincludes.size());
+    from.erase(ofs, to_remove.size());
+}
+
+void adjust_command(ModuleCommandGenerator::Format format, std::string& cmd) {
+  if (format.isMSVC() || format.isClangCl()) {
+    // don't print the list of deps in MSVC format
+    remove_from_string(cmd, "/showIncludes ");
+    // the following cause the scanner to fail
+    remove_from_string(cmd, "/experimental:preprocessor ");
+    remove_from_string(cmd, "/permissive ");
+  }
 }
 
 Node* get_src_node(Edge* edge) {
@@ -159,8 +167,8 @@ inline bool starts_with(std::string_view str, std::string_view with) {
   return str.substr(0, with.size()) == with;
 }
 
-bool print_results(
-    const vector_map<scan_item_idx_t, Scanner::Result>& results) {
+bool print_results(const vector_map<scan_item_idx_t, Scanner::Result>& results,
+                   span_map<scan_item_idx_t, ScanItem> items) {
   uint32_t utd_items = 0;
   uint32_t scanned_items = 0;
   uint32_t failed_items = 0;
@@ -174,8 +182,12 @@ bool print_results(
   }
 
   fmt::print("scanned {} items, {} up-to-date", scanned_items, utd_items);
-  if (failed_items != 0)
-    fmt::print(", {} failed", failed_items);
+  if (failed_items != 0) {
+    fmt::print(", {} failed:\n", failed_items);
+    for (auto idx : results.indices())
+      if (results[idx].scan == scan_state::failed)
+        fmt::print("  {}\n", items[idx].path);
+  }
   fmt::print("\n");
   return failed_items == 0;
 }
@@ -400,15 +412,18 @@ void scanner_update_state(
                                       get_target_id(edge), is_header_unit });
 
     std::string cmd = edge->EvaluateCommand(/*incld_rsp_file=*/true);
-    adjust_command(cmd);
+    auto format = config.command_format;
+    if (!format) {
+      format = ModuleCommandGenerator::detect_format(cmd);
+      item_cmd_format.push_back(format);
+    }
+    adjust_command(format, cmd);
     if (config.verbose_scan)
       cmd += " -v ";
     config.item_set.commands.push_back(cmd);
     item_to_edge.push_back(edge);
     item_to_src_node.push_back(src_node);
     item_to_out_node.push_back(out_node);
-    if (!config.command_format)
-      item_cmd_format.push_back(ModuleCommandGenerator::detect_format(cmd));
   }
 
   auto config_owned_view = Scanner::ConfigOwnedView::from(config);
@@ -416,7 +431,8 @@ void scanner_update_state(
 
   Scanner scanner;
   try {
-    if (!print_results(scanner.scan(config_view)))
+    auto results = scanner.scan(config_view);
+    if (!print_results(results, config.item_set.items))
       exit(1);
     if (!module_visitor.collate_success) {
       fmt::print("collate failed\n");
@@ -473,8 +489,7 @@ void scanner_update_state(
       // MSVC builds both the bmi and the obj in one command
       cmd_gen.full_cmd_to_string(obj_edge->command_suffix_);
       if (has_export || is_header_unit) {
-        // note: this requires disabling the assert(edge->outputs_.size() == 1)
-        // in build.cc
+        // requires disabling assert(edge->outputs_.size() == 1) in build.cc
         edge_updater.add_implicit_output(bmi_nodes[idx]);
       }
     }
