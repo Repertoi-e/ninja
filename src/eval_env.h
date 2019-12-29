@@ -101,6 +101,9 @@ struct BindingEnv : public Env {
   string LookupWithFallback(const string& var, const EvalString* eval,
                             Env* env);
 
+  BindingEnv* AppendToVariable(const string& var, const string& suffix);
+  BindingEnv* Clone();
+
 private:
   map<string, string> bindings_;
   map<string, const Rule*> rules_;

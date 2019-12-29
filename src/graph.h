@@ -101,6 +101,12 @@ struct Node {
   const vector<Edge*>& out_edges() const { return out_edges_; }
   void AddOutEdge(Edge* edge) { out_edges_.push_back(edge); }
 
+  void RemoveOutEdge(Edge* edge) {
+    auto itr = std::find(out_edges_.begin(), out_edges_.end(), edge);
+    if (itr != out_edges_.end())
+      out_edges_.erase(itr);
+  }
+
   void Dump(const char* prefix="") const;
 
 private:

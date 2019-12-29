@@ -21,7 +21,7 @@ void remove_from_string(std::string& from, std::string_view to_remove) {
     from.erase(ofs, to_remove.size());
 }
 
-void adjust_command(ModuleCommandGenerator::Format format, std::string& cmd) {
+void adjust_command(std::string& cmd, ModuleCommandGenerator::Format format) {
   if (format.isMSVC() || format.isClangCl()) {
     // don't print the list of deps in MSVC format
     remove_from_string(cmd, "/showIncludes ");
@@ -38,7 +38,7 @@ Node* get_src_node(Edge* edge) {
 }
 
 struct EdgeUpdater {
-  Edge* edge;
+  Edge* edge = nullptr;
   std::vector<Node*> new_implicit_inputs, new_explicit_inputs,
       new_explicit_outputs;
   std::size_t explicit_input_end = 0, implicit_input_end = 0,
@@ -87,6 +87,14 @@ struct EdgeUpdater {
     insert(edge->inputs_, new_implicit_inputs,
            implicit_input_end + new_explicit_inputs.size());
     insert(edge->outputs_, new_explicit_outputs, explicit_output_end);
+    edge = nullptr;
+  }
+
+  static void replace_input(Edge* edge, int input_index, Node* new_input) {
+    Node* old_input = edge->inputs_[input_index];
+    old_input->RemoveOutEdge(edge);
+    edge->inputs_[input_index] = new_input;
+    new_input->AddOutEdge(edge);
   }
 };
 
@@ -417,7 +425,7 @@ void scanner_update_state(
       format = ModuleCommandGenerator::detect_format(cmd);
       item_cmd_format.push_back(format);
     }
-    adjust_command(format, cmd);
+    adjust_command(cmd, format);
     if (config.verbose_scan)
       cmd += " -v ";
     config.item_set.commands.push_back(cmd);
@@ -469,25 +477,37 @@ void scanner_update_state(
       return bmi_nodes[idx]->path();
     });
 
-    if (format.isClang()) {
+    if (format.isClang() || format.isClangCl()) {
       // clang builds the bmi and the obj separately
-      cmd_gen.references_to_string(obj_edge->command_suffix_);
-      if (has_export || is_header_unit) {
-        edge_updater.add_implicit_input(bmi_nodes[idx]);
-        edge_updater.update();
+      obj_edge->command_suffix_ = cmd_gen.references_to_string();
+      bool split_compile = has_export || is_header_unit;
+      if (split_compile) {
+        BindingEnv* orig_env = obj_edge->env_;
+
+        if (format.isClang()) {
+          // the -x pcm needs to be in the command line *before* the input
+          obj_edge->env_ = orig_env->Clone()->AppendToVariable(
+              "FLAGS", " -x pcm -Wno-unused-command-line-argument");
+          EdgeUpdater::replace_input(obj_edge, 0, bmi_nodes[idx]);
+        } else {
+          edge_updater.add_implicit_input(bmi_nodes[idx]);
+          edge_updater.update();
+        }
 
         Edge* bmi_edge = state->AddEdge(&obj_edge->rule());
-        bmi_edge->env_ = obj_edge->env_;
-        cmd_gen.full_cmd_to_string(bmi_edge->command_suffix_);
+        bmi_edge->env_ = orig_env;
+        bmi_edge->command_suffix_ = cmd_gen.full_cmd_to_string();
         edge_updater.set_edge_to_update(bmi_edge);
         edge_updater.add_explicit_input(item_to_src_node[idx]);
         edge_updater.add_explicit_output(bmi_nodes[idx]);
         // note: the inputs for the module imports will be added to the bmi
         // edge instead of the object edge
+      } else if (is_header_unit) {
+        // EdgeUpdater::replace_output(obj_edge, 0, bmi_nodes[idx]);
       }
     } else if (format.isMSVC()) {
       // MSVC builds both the bmi and the obj in one command
-      cmd_gen.full_cmd_to_string(obj_edge->command_suffix_);
+      obj_edge->command_suffix_ = cmd_gen.full_cmd_to_string();
       if (has_export || is_header_unit) {
         // requires disabling assert(edge->outputs_.size() == 1) in build.cc
         edge_updater.add_implicit_output(bmi_nodes[idx]);
