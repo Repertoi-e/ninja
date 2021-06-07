@@ -5,6 +5,7 @@
 #include <fstream>
 #include <iostream>
 #include <unordered_set>
+#include <assert.h>
 
 #include "graph.h"
 #include "module_cmdgen.h"

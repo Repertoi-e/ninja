@@ -101,5 +101,5 @@ enable_testing()
 add_test(NinjaTest ninja_test)
 endif() # BUILD_TESTS
 
-set_property(TARGET libninja PROPERTY CXX_STANDARD 17)
-set_property(TARGET ninja PROPERTY CXX_STANDARD 17)
+set_property(TARGET libninja PROPERTY CXX_STANDARD 20)
+set_property(TARGET ninja PROPERTY CXX_STANDARD 20)
