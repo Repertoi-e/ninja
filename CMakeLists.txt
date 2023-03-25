@@ -38,8 +38,10 @@ else()
 endif()
 
 # --- optional re2c
+if(USE_RE2C)
 find_program(RE2C re2c)
-if(RE2C)
+endif()
+if(USE_RE2C AND RE2C)
 	# the depfile parser and ninja lexers are generated using re2c.
 	function(re2c IN OUT)
 		add_custom_command(DEPENDS ${IN} OUTPUT ${OUT}
@@ -115,6 +117,7 @@ add_library(libninja OBJECT
 	src/metrics.cc
 	src/missing_deps.cc
 	src/parser.cc
+	src/scanner_plugin.cc
 	src/state.cc
 	src/status.cc
 	src/string_piece_util.cc
@@ -255,3 +258,9 @@ endif()
 if(NINJA_BUILD_BINARY)
 	install(TARGETS ninja)
 endif()
+
+set_property(TARGET libninja PROPERTY CXX_STANDARD 20)
+set_property(TARGET ninja PROPERTY CXX_STANDARD 20)
+
+set_property(TARGET libninja PROPERTY CXX_STANDARD 20)
+set_property(TARGET ninja PROPERTY CXX_STANDARD 20)

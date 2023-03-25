@@ -98,6 +98,20 @@ string BindingEnv::LookupWithFallback(const string& var,
   return "";
 }
 
+BindingEnv* BindingEnv::AppendToVariable(const string& var, const string& suffix) {
+  auto [itr, inserted] = bindings_.try_emplace(var, suffix);
+  if (!inserted)
+    itr->second += suffix;
+  return this;
+}
+
+BindingEnv* BindingEnv::Clone() {
+  BindingEnv *env = new BindingEnv(parent_);
+  env->bindings_ = bindings_;
+  env->rules_ = rules_;
+  return env;
+}
+
 string EvalString::Evaluate(Env* env) const {
   string result;
   for (TokenList::const_iterator i = parsed_.begin(); i != parsed_.end(); ++i) {
