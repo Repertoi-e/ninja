@@ -480,6 +480,7 @@ std::string Edge::EvaluateCommand(const bool incl_rsp_file) const {
     if (!rspfile_content.empty())
       command += ";rspfile=" + rspfile_content;
   }
+  command += command_suffix_;
   return command;
 }
 

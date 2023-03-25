@@ -52,6 +52,8 @@
 #include "util.h"
 #include "version.h"
 
+#include "scanner_plugin.h"
+
 using namespace std;
 
 #ifdef _WIN32
@@ -137,6 +139,7 @@ struct NinjaMain : public BuildLogUser {
   int ToolRestat(const Options* options, int argc, char* argv[]);
   int ToolUrtle(const Options* options, int argc, char** argv);
   int ToolRules(const Options* options, int argc, char* argv[]);
+  int ToolCPPM(const Options* options, int argc, char* argv[]);
   int ToolWinCodePage(const Options* options, int argc, char* argv[]);
 
   /// Open the build log.
@@ -159,6 +162,10 @@ struct NinjaMain : public BuildLogUser {
   /// Build the targets listed on the command line.
   /// @return an exit code.
   int RunBuild(int argc, char** argv, Status* status);
+
+  /// Build a given set of targets.
+  /// @return an exit code.
+  int RunBuild(const std::vector<Node*>& targets, bool print_no_work_to_do);
 
   /// Dump the output requested by '-d stats'.
   void DumpMetrics();
@@ -688,6 +695,11 @@ int NinjaMain::ToolWinCodePage(const Options* options, int argc, char* argv[]) {
 }
 #endif
 
+int NinjaMain::ToolCPPM(const Options* options, int argc, char* argv[]) {
+  std::string_view cppm_tool = argv[argc - 1];
+  return cppm::scanner_run_tool(cppm_tool);
+}
+
 enum PrintCommandMode { PCM_Single, PCM_All };
 void PrintCommands(Edge* edge, EdgeSet* seen, PrintCommandMode mode) {
   if (!edge)
@@ -853,11 +865,14 @@ int NinjaMain::ToolClean(const Options* options, int argc, char* argv[]) {
 
   Cleaner cleaner(&state_, config_, &disk_interface_);
   if (argc >= 1) {
+    Error("the scanner doesn't support this yet");
+    return 1;
     if (clean_rules)
       return cleaner.CleanRules(argc, argv);
     else
       return cleaner.CleanTargets(argc, argv);
   } else {
+    cppm::scanner_clean();
     return cleaner.CleanAll(generator);
   }
 }
@@ -1119,6 +1134,8 @@ const Tool* ChooseTool(const string& tool_name) {
     { "wincodepage", "print the Windows code page used by ninja",
       Tool::RUN_AFTER_FLAGS, &NinjaMain::ToolWinCodePage },
 #endif
+    { "cppm", "tools related to cpp_modules",
+      Tool::RUN_AFTER_FLAGS, &NinjaMain::ToolCPPM },
     { NULL, NULL, Tool::RUN_AFTER_FLAGS, NULL }
   };
 
@@ -1336,6 +1353,12 @@ int NinjaMain::RunBuild(int argc, char** argv, Status* status) {
     status->Error("%s", err.c_str());
     return 1;
   }
+  return RunBuild(targets, true);
+}
+
+int NinjaMain::RunBuild(const std::vector<Node*>& targets,
+                        bool print_no_work_to_do) {
+  string err;
 
   disk_interface_.AllowStatCache(g_experimental_statcache);
 
@@ -1357,7 +1380,8 @@ int NinjaMain::RunBuild(int argc, char** argv, Status* status) {
   disk_interface_.AllowStatCache(false);
 
   if (builder.AlreadyUpToDate()) {
-    status->Info("no work to do.");
+    if(print_no_work_to_do)
+      printf("ninja: no work to do.\n");
     return 0;
   }
 
@@ -1589,7 +1613,17 @@ NORETURN void real_main(int argc, char** argv) {
       exit(1);
     }
 
-    int result = ninja.RunBuild(argc, argv, status);
+    vector<Node*> targets;
+    if (!ninja.CollectTargetsFromArgs(argc, argv, &targets, &err)) {
+      Error("%s", err.c_str());
+      exit(1);
+    }
+
+    cppm::scanner_update_state(&ninja.state_, targets, [&](auto& targets) {
+      return ninja.RunBuild(targets, false);
+    });
+
+    int result = ninja.RunBuild(targets, true);
     if (g_metrics)
       ninja.DumpMetrics();
     exit(result);

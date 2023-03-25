@@ -112,6 +112,12 @@ struct Node {
   void AddOutEdge(Edge* edge) { out_edges_.push_back(edge); }
   void AddValidationOutEdge(Edge* edge) { validation_out_edges_.push_back(edge); }
 
+  void RemoveOutEdge(Edge* edge) {
+    auto itr = std::find(out_edges_.begin(), out_edges_.end(), edge);
+    if (itr != out_edges_.end())
+      out_edges_.erase(itr);
+  }
+
   void Dump(const char* prefix="") const;
 
 private:
@@ -213,6 +219,7 @@ struct Edge {
   bool deps_missing_;
   bool generated_by_dep_loader_;
   TimeStamp command_start_time_;
+  std::string command_suffix_;
 
   const Rule& rule() const { return *rule_; }
   Pool* pool() const { return pool_; }
